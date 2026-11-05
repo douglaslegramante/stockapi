@@ -3,81 +3,102 @@
 // caminho entre a rota e a lógica de negócio. Ela recebe os mesmos
 // (req, res, next) de sempre, e tem duas escolhas:
 //
-//   1. Encontrou um problema → responde direto (res.status(...).json(...))
-//      e NÃO chama next(). A requisição para aqui; o controller nunca roda.
+//   1. Encontrou um problema → responde direto (400) e NÃO chama next().
+//      A requisição para aqui; o controller nunca roda.
 //   2. Está tudo certo → chama next(), e o Express segue pro próximo
 //      middleware (ou pro controller, se não houver mais nenhum).
 //
-// Este arquivo tem DOIS middlewares parecidos, mas com regras diferentes:
-// validarProduto (para criar — POST) exige nome e preco sempre.
-// validarAtualizacaoProduto (para atualizar — PATCH) só valida o que veio,
-// porque em uma atualização parcial nem todo campo é obrigatório.
+// Este arquivo tem DOIS middlewares, com regras diferentes:
+//   • validarProduto           → POST  (criar): nome e preco são obrigatórios
+//   • validarAtualizacaoProduto → PATCH (atualizar): nenhum campo é obrigatório
+//                                 sozinho, mas o que vier precisa estar certo
 
+import { responderValidacao } from '../utils/respostasErro.js';
+
+// Limites que vêm do banco (veja database/schema.sql). Validar aqui evita que
+// o MySQL recuse o valor e a API responda 500.
+const NOME_MAX = 100;            // produtos.nome  VARCHAR(100)
+const PRECO_MAX = 99999999.99;   // produtos.preco DECIMAL(10,2)
+
+// Campos que o cliente pode enviar (também é a whitelist do PATCH).
 const CAMPOS_PRODUTO = ['nome', 'descricao', 'preco', 'quantidade_estoque', 'categoria_id'];
 
-// Usado na criação (POST /produtos): aqui faz sentido exigir os campos
-// principais, porque um produto novo precisa nascer com nome e preço.
-export function validarProduto(req, res, next) {
-  const { nome, preco, quantidade_estoque, categoria_id } = req.body;
-  const erros = [];
-
-  if (!nome || typeof nome !== 'string' || !nome.trim()) {
-    erros.push('nome é obrigatório e deve ser um texto');
-  }
-
-  if (preco === undefined || preco === null || typeof preco !== 'number' || preco <= 0) {
-    erros.push('preco é obrigatório e deve ser um número maior que zero');
-  }
-
-  if (quantidade_estoque !== undefined && (typeof quantidade_estoque !== 'number' || quantidade_estoque < 0)) {
-    erros.push('quantidade_estoque deve ser um número maior ou igual a zero');
-  }
-
-  if (categoria_id !== undefined && categoria_id !== null && typeof categoria_id !== 'number') {
-    erros.push('categoria_id deve ser um número');
-  }
-
-  if (erros.length > 0) {
-    return res.status(400).json({ erros });
-  }
-
-  next();
+// Cada função abaixo confere UM campo e devolve a mensagem de erro, ou null
+// se estiver tudo certo. Assim POST e PATCH reaproveitam as mesmas regras.
+function erroNome(nome) {
+  if (typeof nome !== 'string' || !nome.trim()) return 'nome deve ser um texto não vazio';
+  if (nome.length > NOME_MAX) return `nome deve ter no máximo ${NOME_MAX} caracteres`;
+  return null;
 }
 
-// Usado na atualização parcial (PATCH /produtos/:id): NENHUM campo é
-// obrigatório sozinho, mas pelo menos um precisa vir — e cada campo que
-// vier precisa ter o tipo certo. Repare o padrão "só valida se veio":
-// `if (nome !== undefined && ...)`, em vez de `if (!nome ...)` como na
-// criação. Isso é o que diferencia "obrigatório" de "opcional, mas
-// validado quando presente".
-export function validarAtualizacaoProduto(req, res, next) {
-  const { nome, preco, quantidade_estoque, categoria_id } = req.body;
+function erroPreco(preco) {
+  if (typeof preco !== 'number' || !(preco > 0) || preco > PRECO_MAX) {
+    return `preco deve ser um número maior que zero e até ${PRECO_MAX}`;
+  }
+  return null;
+}
+
+function erroEstoque(qtd) {
+  // Number.isInteger rejeita 1.5 (estoque é contado em unidades inteiras).
+  // 0 é válido, por isso a comparação é >= 0.
+  if (!Number.isInteger(qtd) || qtd < 0) return 'quantidade_estoque deve ser um número inteiro maior ou igual a zero';
+  return null;
+}
+
+function erroCategoria(id) {
+  // Aqui só checamos o TIPO. Se o número não existir na tabela categorias,
+  // quem barra é o banco (chave estrangeira) → errorHandler do index.js.
+  if (!Number.isInteger(id)) return 'categoria_id deve ser um número inteiro (ou null)';
+  return null;
+}
+
+function erroDescricao(descricao) {
+  if (typeof descricao !== 'string') return 'descricao deve ser um texto (ou null)';
+  return null;
+}
+
+// POST /produtos — criação: nome e preco obrigatórios; o resto é opcional.
+export function validarProduto(req, res, next) {
+  const { nome, descricao, preco, quantidade_estoque, categoria_id } = req.body;
+
+  // Em vez de parar no primeiro problema, juntamos TODOS os erros num array
+  // e devolvemos de uma vez. Quem consome a API corrige tudo numa tentativa só.
   const erros = [];
 
-  const camposEnviados = Object.keys(req.body).filter((campo) => CAMPOS_PRODUTO.includes(campo));
-  if (camposEnviados.length === 0) {
-    erros.push('envie pelo menos um campo para atualizar (nome, descricao, preco, quantidade_estoque ou categoria_id)');
+  if (nome === undefined) erros.push('nome é obrigatório');
+  else if (erroNome(nome)) erros.push(erroNome(nome));
+
+  if (preco === undefined) erros.push('preco é obrigatório');
+  else if (erroPreco(preco)) erros.push(erroPreco(preco));
+
+  // Opcionais: padrão "só valida se veio" (`!== undefined`). Descrição e
+  // categoria_id aceitam null (produto sem descrição / sem categoria).
+  if (quantidade_estoque !== undefined && erroEstoque(quantidade_estoque)) erros.push(erroEstoque(quantidade_estoque));
+  if (descricao !== undefined && descricao !== null && erroDescricao(descricao)) erros.push(erroDescricao(descricao));
+  if (categoria_id !== undefined && categoria_id !== null && erroCategoria(categoria_id)) erros.push(erroCategoria(categoria_id));
+
+  if (erros.length > 0) return responderValidacao(res, erros);
+  next(); // tudo certo: segue para o controller
+}
+
+// PATCH /produtos/:id — atualização PARCIAL: nenhum campo é obrigatório
+// sozinho, mas pelo menos UM campo reconhecido precisa vir, e cada campo
+// que vier precisa ter o tipo certo.
+export function validarAtualizacaoProduto(req, res, next) {
+  const { nome, descricao, preco, quantidade_estoque, categoria_id } = req.body;
+  const erros = [];
+
+  const enviados = Object.keys(req.body).filter((campo) => CAMPOS_PRODUTO.includes(campo));
+  if (enviados.length === 0) {
+    erros.push(`envie pelo menos um campo para atualizar (${CAMPOS_PRODUTO.join(', ')})`);
   }
 
-  if (nome !== undefined && (typeof nome !== 'string' || !nome.trim())) {
-    erros.push('nome, se enviado, deve ser um texto não vazio');
-  }
+  if (nome !== undefined && erroNome(nome)) erros.push(erroNome(nome));
+  if (preco !== undefined && erroPreco(preco)) erros.push(erroPreco(preco));
+  if (quantidade_estoque !== undefined && erroEstoque(quantidade_estoque)) erros.push(erroEstoque(quantidade_estoque));
+  if (descricao !== undefined && descricao !== null && erroDescricao(descricao)) erros.push(erroDescricao(descricao));
+  if (categoria_id !== undefined && categoria_id !== null && erroCategoria(categoria_id)) erros.push(erroCategoria(categoria_id));
 
-  if (preco !== undefined && (typeof preco !== 'number' || preco <= 0)) {
-    erros.push('preco, se enviado, deve ser um número maior que zero');
-  }
-
-  if (quantidade_estoque !== undefined && (typeof quantidade_estoque !== 'number' || quantidade_estoque < 0)) {
-    erros.push('quantidade_estoque, se enviado, deve ser um número maior ou igual a zero');
-  }
-
-  if (categoria_id !== undefined && categoria_id !== null && typeof categoria_id !== 'number') {
-    erros.push('categoria_id, se enviado, deve ser um número');
-  }
-
-  if (erros.length > 0) {
-    return res.status(400).json({ erros });
-  }
-
+  if (erros.length > 0) return responderValidacao(res, erros);
   next();
 }

@@ -1,351 +1,375 @@
+# StockAPI
 
+API REST de **controle de estoque e pedidos**, construída ao longo da disciplina de **Desenvolvimento Back-end II** (IFRO).
+
+- **Stack:** Node.js · Express · MySQL (`mysql2`, sem ORM) · JWT · bcrypt
+- **Padrão de código:** ES Modules (`import`/`export`), `async/await`
+- **Documentação da API:** [`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI 3.0)
+- **Testes manuais:** coleção do Postman em [`postman/`](postman/)
+
+> Todos os arquivos de código têm comentários em português explicando **o que** cada parte faz e **por que**. Leia o código com calma: ele é o material de estudo.
 
 ---
 
-## 1. Stack utilizada
+## Sumário
 
-| Tecnologia | Papel no projeto |
+1. [Como rodar](#1-como-rodar)
+2. [Estrutura de pastas](#2-estrutura-de-pastas)
+3. [Como uma requisição percorre a API](#3-como-uma-requisição-percorre-a-api)
+4. [Banco de dados](#4-banco-de-dados)
+5. [Endpoints](#5-endpoints)
+6. [Autenticação](#6-autenticação)
+7. [Erros e status codes](#7-erros-e-status-codes)
+8. [Documentação e Postman](#8-documentação-e-postman)
+9. [Problemas comuns](#9-problemas-comuns)
+
+---
+
+## 1. Como rodar
+
+**Pré-requisitos:** [Node.js](https://nodejs.org) 18 ou superior e MySQL instalado e em execução.
+
+```bash
+# 1. Baixe o projeto e entre na pasta
+git clone <url-do-repositorio>
+cd stockapi
+
+# 2. Instale as dependências (precisa de internet)
+npm install
+
+# 3. Crie o banco e as tabelas
+mysql -u root -p < database/schema.sql
+
+# 4. (Opcional) Carregue dados de exemplo
+mysql -u root -p stockapi < database/seed.sql
+
+# 5. Crie o seu arquivo de configuração
+cp .env.example .env        # no Windows: copy .env.example .env
+```
+
+Abra o `.env` e preencha com os **seus** valores (principalmente `DB_PASSWORD` e `JWT_SECRET`):
+
+| Variável | Para que serve |
 |---|---|
-| Node.js + Express | Framework do servidor HTTP |
-| MySQL + mysql2 | Banco de dados relacional e driver de conexão |
-| dotenv | Carrega variáveis de ambiente do `.env` |
-| cors | Permite que outras origens acessem a API |
-| nodemon | Reinicia o servidor automaticamente em desenvolvimento |
+| `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | Conexão com o MySQL |
+| `PORT` | Porta da API (padrão `3000`) |
+| `JWT_SECRET` | Segredo que assina os tokens de login. Qualquer frase longa serve |
+
+```bash
+# 6. Inicie a API
+npm run dev      # reinicia sozinho a cada alteração (nodemon)
+# ou
+npm start        # execução simples
+```
+
+Teste: abra <http://localhost:3000/> — deve aparecer `StockAPI no ar`.
+A API fica em <http://localhost:3000/api>.
+
+> **Nunca** envie o arquivo `.env` ao Git. Ele já está no `.gitignore`; só o `.env.example` (sem segredos) é versionado.
 
 ---
 
-## 2. Estrutura do projeto
+## 2. Estrutura de pastas
 
 ```
 stockapi/
-├── config/
-│   └── db.js                       # conexão (pool) com o MySQL
-├── controllers/
-│   ├── produtosController.js
-│   ├── clientesController.js
-│   ├── pedidosController.js
-│   └── itensPedidoController.js
-├── middlewares/
-│   ├── validarProduto.js           # validarProduto + validarAtualizacaoProduto (PATCH)
-│   ├── validarCliente.js
-│   ├── validarPedido.js            # validarPedido + validarAtualizacaoPedido
-│   └── validarItemPedido.js        # validarItemPedido + validarAtualizacaoItemPedido
-├── routes/
-│   ├── produtosRoutes.js
-│   ├── clientesRoutes.js
-│   ├── pedidosRoutes.js
-│   └── itensPedidoRoutes.js
-├── services/
-│   ├── produtosService.js
-│   ├── clientesService.js
-│   ├── pedidosService.js           # listarTodos/buscarPorId usam JOIN com clientes
-│   └── itensPedidoService.js
-├── database/
-│   └── schema.sql                  # cria o banco e as 6 tabelas
-├── .env.example                    # modelo de variáveis de ambiente
-├── .gitignore
-├── index.js                        # ponto de entrada — servidor, rotas, 404 e erro central
-├── package.json
-└── README.md
+├─ index.js                  ← ponto de entrada: monta o servidor, registra rotas, 404 e tratamento de erros
+├─ config/
+│  └─ db.js                  ← pool de conexões com o MySQL
+├─ routes/                   ← liga MÉTODO + CAMINHO → middlewares → controller
+│  ├─ produtosRoutes.js
+│  ├─ categoriasRoutes.js
+│  ├─ clientesRoutes.js
+│  ├─ pedidosRoutes.js
+│  ├─ itensPedidoRoutes.js
+│  └─ usuariosRoutes.js
+├─ middlewares/              ← funções que rodam ANTES do controller
+│  ├─ validarProduto.js      ← valida o corpo da requisição (um por entidade)
+│  ├─ validarCategoria.js
+│  ├─ validarCliente.js
+│  ├─ validarPedido.js
+│  ├─ validarItemPedido.js
+│  ├─ validarUsuario.js
+│  └─ autenticar.js          ← confere o token JWT (rotas protegidas)
+├─ controllers/              ← recebe req, chama o service, decide a resposta (status + JSON)
+├─ services/                 ← único lugar com SQL
+├─ utils/
+│  ├─ respostasErro.js       ← formato ÚNICO das respostas de erro de validação
+│  └─ montarAtualizacao.js   ← monta o UPDATE dinâmico dos PATCH
+├─ database/
+│  ├─ schema.sql             ← cria o banco e as 6 tabelas
+│  └─ seed.sql               ← dados de exemplo (opcional)
+├─ docs/
+│  └─ openapi.yaml           ← especificação da API (contrato)
+├─ postman/
+│  ├─ StockAPI.postman_collection.json
+│  └─ StockAPI_Local.postman_environment.json
+├─ .env.example              ← modelo do .env
+└─ package.json
 ```
 
-`notFound` e `errorHandler` **não são arquivos separados** — são definidos direto no `index.js`, do mesmo jeito que vocês já fizeram em Back-end I. Cada tabela tem sua própria validação em `middlewares/`, porque ela é reaproveitável entre rotas diferentes (POST e PUT/PATCH).
+Cada entidade (produtos, categorias, clientes, pedidos, itens de pedido) segue **o mesmo desenho em camadas**, com um arquivo em cada pasta: `routes` → `middlewares` → `controllers` → `services`. Aprendeu uma, aprendeu todas.
 
-Cada pasta tem uma única responsabilidade — é assim que o projeto se mantém organizado conforme cresce:
+---
+
+## 3. Como uma requisição percorre a API
+
+Exemplo: `PATCH /api/produtos/3`
+
+```
+Cliente (Postman)
+   │  PATCH /api/produtos/3  { "preco": 20 }
+   ▼
+index.js              express.json() transforma o corpo em objeto (req.body)
+   ▼
+routes                encontra a rota PATCH /produtos/:id
+   ▼
+middleware            validarProduto confere o corpo
+   │                    └─ inválido? responde 400 e PARA aqui
+   ▼
+controller            confere se o produto existe (404 se não)
+   ▼
+service               executa o UPDATE no MySQL
+   ▼
+controller            monta a resposta (200 + JSON)
+   ▼
+Cliente
+
+Qualquer exceção em qualquer etapa → next(erro) → errorHandler (index.js) → 400 ou 500
+```
 
 | Camada | Responsabilidade | Nunca faz |
 |---|---|---|
-| `routes/` | Define URL + verbo HTTP, liga middleware e controller | Lógica de negócio ou SQL |
-| `middlewares/` | Valida, autentica ou intercepta a requisição antes do controller | Montar a resposta final de sucesso |
-| `controllers/` | Lê `req`, chama o service, decide o status code da resposta | SQL direto |
-| `services/` | Executa queries SQL, retorna dados "crus" | Conhecer `req`/`res` |
+| **routes** | Ligar caminho e método ao controller | Lógica ou SQL |
+| **middlewares** | Validar a entrada / autenticar | Falar com o banco |
+| **controllers** | Decidir status code e corpo da resposta | SQL |
+| **services** | SQL e acesso ao banco | Usar `req`/`res` ou status code |
 
 ---
 
-## 3. Como rodar
-
-```bash
-npm install
-cp .env.example .env       # depois preencha DB_PASSWORD com a senha do seu MySQL
-```
-
-Rode `database/schema.sql` no seu MySQL (cria o banco `stockapi` e as 6 tabelas, na ordem certa por causa das chaves estrangeiras).
-
-```bash
-npm run dev                # sobe com nodemon (reinicia sozinho ao salvar)
-# ou
-npm start                  # sobe sem reiniciar automático
-```
-
-Servidor no ar em `http://localhost:3000`.
-
----
-
-## 4. O fluxo de uma requisição
+## 4. Banco de dados
 
 ```
-requisição do cliente
-        │
-        ▼
-     routes           → identifica a URL e o verbo (GET, POST, PATCH, DELETE)
-        │
-        ▼
-  middleware de        → só existe em POST e PATCH
-  validação (se houver)  se os dados estiverem errados, responde 400 e para aqui
-        │
-        ▼
-    controller         → chama o service e decide o que responder
-        │
-        ▼
-     service           → executa a query SQL e retorna o resultado
-        │
-        ▼
-  controller responde  → JSON + status code
+categorias ──< produtos >──< itens_pedido >── pedidos >── clientes
+
+usuarios  (independente: só serve para o login)
 ```
 
-Se qualquer coisa der errado no meio do caminho (erro de banco, exceção não prevista), o controller chama `next(erro)` e a resposta é montada pelo **errorHandler**, não pelo controller.
+| Tabela | Chaves estrangeiras | Observações |
+|---|---|---|
+| `categorias` | — | |
+| `clientes` | — | `email` e `telefone` opcionais |
+| `usuarios` | — | `email` é `UNIQUE`; guarda `senha_hash`, nunca a senha |
+| `produtos` | `categoria_id → categorias` | `categoria_id` aceita `NULL` |
+| `pedidos` | `cliente_id → clientes` | `status` padrão: `pendente` |
+| `itens_pedido` | `pedido_id → pedidos`, `produto_id → produtos` | liga pedidos a produtos (N:N) |
+
+**JOINs usados nas consultas:**
+
+| Consulta | JOIN | Por quê |
+|---|---|---|
+| Produtos | `LEFT JOIN categorias` | `categoria_id` pode ser `NULL`; com `INNER JOIN` esses produtos sumiriam |
+| Pedidos | `INNER JOIN clientes` | todo pedido tem cliente |
+| Itens de pedido | `INNER JOIN produtos` e `INNER JOIN pedidos` | todo item tem pedido e produto |
 
 ---
 
 ## 5. Endpoints
 
-Prefixo de todas as rotas: `/api/v1/stockapi`
+Prefixo de todas as rotas: **`/api`**. 🔒 = exige token.
 
-Além disso, há uma rota fora do prefixo, só para checar se o servidor está no ar:
+### Auth
 
-| Método | Rota | Sucesso |
-|---|---|---|
-| GET | `/health` | 200 + `{ "status": "ok" }` |
+| Método | Rota | Descrição | Sucesso |
+|---|---|---|---|
+| POST | `/usuarios/registro` | Cria um usuário | 201 |
+| POST | `/usuarios/login` | Devolve o token JWT | 200 |
 
-| Método | Rota | Corpo (JSON) | Sucesso | Erros possíveis |
+### Produtos · Categorias · Clientes · Pedidos · Itens de pedido
+
+Todos os recursos seguem o mesmo CRUD:
+
+| Método | Rota | Descrição | Sucesso | Erros possíveis |
 |---|---|---|---|---|
-| POST | `/api/v1/stockapi/produtos` | `{ "nome", "preco", "descricao"?, "quantidade_estoque"?, "categoria_id"? }` — nome e preco obrigatórios | 201 + produto criado | 400 (dados inválidos) |
-| GET | `/api/v1/stockapi/produtos` | — | 200 + lista, **com o nome da categoria via LEFT JOIN** | — |
-| GET | `/api/v1/stockapi/produtos/:id` | — | 200, idem | 404 (não existe) |
-| PATCH | `/api/v1/stockapi/produtos/:id` | Qualquer subconjunto dos campos acima — só o que vier é alterado | 200 + produto atualizado | 400 / 404 |
-| DELETE | `/api/v1/stockapi/produtos/:id` | — | 204 (sem corpo) | 404 (não existe) |
-| qualquer | rota que não existe | — | — | 404 (rota não encontrada) |
+| POST | `/{recurso}` | Cria | 201 | 400 |
+| GET | `/{recurso}` | Lista todos | 200 | — |
+| GET | `/{recurso}/:id` | Busca um | 200 | 404 |
+| PATCH ou PUT | `/{recurso}/:id` | Atualiza (ver abaixo qual cada recurso usa) | 200 | 400, 404 |
+| DELETE | `/{recurso}/:id` | Remove | 204 | 400, 404 (e 401 nas rotas 🔒) |
 
-Exemplo de teste no Postman:
+`{recurso}` = `produtos`, `categorias`, `clientes`, `pedidos` ou `itens_pedido`.
 
-```
-POST http://localhost:3000/api/v1/stockapi/produtos
-Content-Type: application/json
+**Particularidades de cada recurso:**
 
-{ "nome": "Caderno", "preco": 15.9, "categoria_id": 1 }
-```
-
-```
-PATCH http://localhost:3000/api/v1/stockapi/produtos/1
-Content-Type: application/json
-
-{ "preco": 18.9 }
-```
-
-O segundo exemplo altera **só** o preço — `nome`, `descricao`, `quantidade_estoque` e `categoria_id` continuam exatamente como estavam.
-
-### clientes, pedidos e itens_pedido — PUT simples
-
-Essas três tabelas usam o padrão de PUT (substituição completa) ensinado em aula, não o PATCH parcial de `produtos`:
-
-| Método | Rota | Corpo (JSON) | Sucesso | Erros possíveis |
-|---|---|---|---|---|
-| POST | `/api/v1/stockapi/clientes` | `{ "nome", "email"?, "telefone"? }` | 201 | 400 |
-| GET | `/api/v1/stockapi/clientes` | — | 200 + lista | — |
-| GET | `/api/v1/stockapi/clientes/:id` | — | 200 | 404 |
-| PUT | `/api/v1/stockapi/clientes/:id` | `{ "nome", "email"?, "telefone"? }` (substitui tudo) | 200 | 400 / 404 |
-| DELETE | `/api/v1/stockapi/clientes/:id` | — | 204 | 404 |
-| POST | `/api/v1/stockapi/pedidos` | `{ "cliente_id", "status"? }` — status padrão é `pendente` | 201 | 400 |
-| GET | `/api/v1/stockapi/pedidos` | — | 200 + lista, **com o nome do cliente via JOIN** | — |
-| GET | `/api/v1/stockapi/pedidos/:id` | — | 200, idem | 404 |
-| PUT | `/api/v1/stockapi/pedidos/:id` | `{ "status" }` — só o status é atualizável | 200 | 400 / 404 |
-| DELETE | `/api/v1/stockapi/pedidos/:id` | — | 204 | 404, ou 400 se houver `itens_pedido` vinculados |
-| POST | `/api/v1/stockapi/itens_pedido` | `{ "pedido_id", "produto_id", "quantidade", "preco_unitario" }` | 201 | 400 |
-| GET | `/api/v1/stockapi/itens_pedido` | — | 200 + lista, **com nome do produto e status do pedido (2 JOINs)** | — |
-| GET | `/api/v1/stockapi/itens_pedido/:id` | — | 200, idem | 404 |
-| PUT | `/api/v1/stockapi/itens_pedido/:id` | `{ "quantidade", "preco_unitario" }` | 200 | 400 / 404 |
-| DELETE | `/api/v1/stockapi/itens_pedido/:id` | — | 204 | 404 |
-
----
-
-## 6. Validação de entrada
-
-`middlewares/validarProduto.js` tem **dois** middlewares, com regras diferentes:
-
-- **`validarProduto`** — usado no `POST` (criar). Exige `nome` e `preco`, porque um produto novo precisa nascer com esses dados.
-- **`validarAtualizacaoProduto`** — usado no `PATCH` (atualizar). Nenhum campo é obrigatório sozinho, mas pelo menos um precisa vir — e cada campo que vier é validado pelo tipo:
-
-```js
-export function validarAtualizacaoProduto(req, res, next) {
-  const { nome, preco, quantidade_estoque, categoria_id } = req.body;
-  const erros = [];
-
-  const camposEnviados = Object.keys(req.body).filter((c) => CAMPOS_PRODUTO.includes(c));
-  if (camposEnviados.length === 0) {
-    erros.push('envie pelo menos um campo para atualizar');
-  }
-
-  if (nome !== undefined && (typeof nome !== 'string' || !nome.trim())) {
-    erros.push('nome, se enviado, deve ser um texto não vazio');
-  }
-  // ...mais checagens, sempre no formato "se enviado, valida o tipo"
-
-  if (erros.length > 0) {
-    return res.status(400).json({ erros });
-  }
-  next();
-}
-```
-
-Repare a diferença de padrão: na criação é `if (!nome)` (obrigatório); na atualização é `if (nome !== undefined && ...)` (opcional, mas validado quando presente).
-
-Se `erros` tiver algo, a requisição para ali — o controller nem é chamado. Se estiver tudo certo, `next()` libera a passagem.
-
----
-
-## 7. PUT x PATCH — por que produtos usa PATCH (e as outras, PUT)
-
-Os dois verbos HTTP existem para atualizar um recurso, mas com sentidos diferentes:
-
-| Verbo | Significado | O cliente manda |
-|---|---|---|
-| `PUT` | Substituição completa | O recurso inteiro — o que não vier é tratado como removido/resetado |
-| `PATCH` | Atualização parcial | Só os campos que quer mudar |
-
-Como queríamos permitir atualizar **um único campo** (ex: só o preço, numa promoção) sem precisar reenviar o produto inteiro, `PATCH` é o verbo tecnicamente correto aqui — é literalmente pra isso que ele foi criado no protocolo HTTP.
-
-### Como o UPDATE parcial funciona por dentro
-
-Como cada requisição pode trazer uma combinação diferente de campos, `services/produtosService.js` monta o `UPDATE` **dinamicamente**, em vez de usar uma query fixa:
-
-```js
-const CAMPOS_PRODUTO = ['nome', 'descricao', 'preco', 'quantidade_estoque', 'categoria_id'];
-
-export async function atualizar(id, camposAtualizados) {
-  const camposParaAtualizar = Object.keys(camposAtualizados)
-    .filter((campo) => CAMPOS_PRODUTO.includes(campo));
-
-  const setClause = camposParaAtualizar.map((campo) => `${campo} = ?`).join(', ');
-  const valores = camposParaAtualizar.map((campo) => camposAtualizados[campo]);
-
-  const [resultado] = await pool.query(
-    `UPDATE produtos SET ${setClause} WHERE id = ?`,
-    [...valores, id]
-  );
-
-  return resultado.affectedRows;
-}
-```
-
-**Isso é seguro contra SQL Injection?** Sim, e vale entender por quê: os *valores* continuam indo por parâmetro (`?`), igual em toda query deste projeto. A única coisa "nova" é que o *nome da coluna* entra direto na string (`${campo}`) — o que normalmente seria perigoso, mas aqui só acontece depois do `.filter()` contra `CAMPOS_PRODUTO`, uma lista fixa definida no código. Não importa o que o cliente mande no corpo da requisição: só um nome de coluna que já está nessa lista consegue chegar até a query. Se alguém mandar `{ "id": 999, "DROP TABLE produtos": true }`, esses campos são simplesmente descartados no `.filter()`.
-
-**Por que só produtos usa esse padrão?** Porque essa técnica (SQL dinâmico) é mais avançada do que o resto do conteúdo do curso. `clientes`, `pedidos` e `itens_pedido` usam UPDATE fixo com PUT — o cliente sempre manda os campos completos, sem a complexidade de montar a query em tempo de execução. Nada impede de aplicar PATCH também nessas tabelas depois, seguindo o mesmo molde desta seção.
-
----
-
-## 8. Tratamento de erros
-
-`notFound` e `errorHandler` não têm arquivo próprio — são definidos direto no `index.js`, exatamente como em Back-end I. São só funções passadas para `app.use()`, registradas **por último** (a ordem importa):
-
-```js
-app.use('/api/v1/stockapi', produtosRoutes);
-app.use('/api/v1/stockapi', clientesRoutes);
-app.use('/api/v1/stockapi', pedidosRoutes);
-app.use('/api/v1/stockapi', itensPedidoRoutes);
-
-app.use((req, res) => {
-  res.status(404).json({ erro: `Rota ${req.method} ${req.originalUrl} não encontrada` });
-});
-
-app.use((erro, req, res, next) => {
-  console.error(erro);
-
-  // Exemplo de erro específico tratado com mensagem melhor: uma FK
-  // enviada não existe (categoria_id, cliente_id, pedido_id, produto_id...).
-  if (erro.code === 'ER_NO_REFERENCED_ROW_2') {
-    return res.status(400).json({ erro: 'referência inválida — o registro relacionado não existe' });
-  }
-
-  // O oposto: tentar deletar um registro que ainda é referenciado por
-  // outra tabela (ex: um pedido que tem itens_pedido vinculados). O banco
-  // recusa a operação para não deixar dados órfãos.
-  if (erro.code === 'ER_ROW_IS_REFERENCED_2') {
-    return res.status(400).json({ erro: 'não é possível remover — existem registros vinculados a este' });
-  }
-
-  res.status(500).json({ erro: 'Erro interno do servidor' });
-});
-```
-
-- **1º `app.use`** — se a requisição chegou até aqui, é porque nenhuma rota cadastrada bateu com ela. Responde 404.
-- **2º `app.use`** — o middleware de erro do Express. A única coisa que faz o Express reconhecer essa função como tratamento de erro (e não mais uma rota) é ela ter exatamente **4 parâmetros**: `(erro, req, res, next)`. Sempre que um controller chama `next(erro)`, a execução pula direto para cá.
-
-Os controllers nunca respondem 500 diretamente — todo `catch` chama `next(erro)` e deixa esse middleware decidir.
-
----
-
-## 9. Um bug sutil: UPDATE e `affectedRows`
-
-No `controllers/produtosController.js`, o `atualizar` busca o produto (`buscarPorId`) **antes** de atualizar, em vez de checar `affectedRows` depois:
-
-```js
-const produtoExistente = await service.buscarPorId(id);
-if (!produtoExistente) {
-  return res.status(404).json({ erro: 'Produto não encontrado' });
-}
-await service.atualizar(id, req.body);
-```
-
-**Por quê:** se o UPDATE não muda nenhum valor (os dados enviados são idênticos aos já salvos), o MySQL retorna `affectedRows = 0` mesmo com o registro existindo. Se o 404 dependesse só disso, um UPDATE "sem mudanças" pareceria um erro. No `deletar`, esse problema não existe — um DELETE sempre afeta 0 ou 1 linha, sem ambiguidade.
-
-O mesmo cuidado foi replicado em `clientesController.js` e `itensPedidoController.js`. Em `pedidosController.js` também — o `atualizar` busca o pedido antes de chamar `atualizarStatus`.
-
----
-
-## 10. Status codes usados
-
-| Código | Nome | Quando aparece |
-|---|---|---|
-| 200 | OK | Leitura ou atualização com sucesso |
-| 201 | Created | Produto criado |
-| 204 | No Content | Produto removido (sem corpo de resposta) |
-| 400 | Bad Request | Validação falhou, ou erro de chave estrangeira |
-| 404 | Not Found | Produto ou rota não encontrados |
-| 500 | Server Error | Erro inesperado (banco fora do ar, bug, etc.) |
-
----
-
-## 11. Erros comuns ao rodar
-
-| Erro | Causa provável |
+| Recurso | O que é diferente |
 |---|---|
-| `ECONNREFUSED` | MySQL não está rodando, ou host/porta errados no `.env` |
-| `ER_ACCESS_DENIED_ERROR` | Usuário ou senha incorretos no `.env` |
-| `ER_BAD_DB_ERROR` | O banco `stockapi` ainda não foi criado — rode `database/schema.sql` |
-| `ER_NO_REFERENCED_ROW_2` | Uma FK enviada (categoria_id, cliente_id, pedido_id, produto_id) não existe |
-| `ER_ROW_IS_REFERENCED_2` | Tentativa de deletar um registro que ainda tem outro apontando para ele (ex: pedido com itens_pedido) |
+| `produtos` | POST exige `nome` e `preco` (> 0). Listagem traz o nome da categoria. Atualiza por **PATCH**. **DELETE 🔒** |
+| `categorias` | Só tem `nome`. Atualiza por **PUT**. **DELETE 🔒** |
+| `clientes` | POST exige só `nome`. Atualiza por **PATCH** |
+| `pedidos` | POST exige `cliente_id`. Atualiza por **PUT**, e só o `status` pode mudar |
+| `itens_pedido` | POST exige `pedido_id`, `produto_id`, `quantidade`, `preco_unitario`. Atualiza por **PATCH** (`quantidade` e/ou `preco_unitario`) |
+
+### PATCH x PUT: qual usar?
+
+| | PATCH | PUT |
+|---|---|---|
+| Ideia | Atualização **parcial** | **Substituição completa** |
+| Corpo | Só os campos que mudam (pelo menos um) | Todos os campos do recurso |
+| Usado em | `produtos`, `clientes`, `itens_pedido` | `categorias`, `pedidos` |
+
+O critério é simples: **PATCH faz sentido quando o recurso tem vários campos editáveis** e é comum mudar só um deles (o preço de um produto, o telefone de um cliente, a quantidade de um item). Já `categorias` só tem o `nome`, e `pedidos` só permite mudar o `status`: com um único campo editável não existe "atualização parcial", então o `PUT` basta.
+
+```json
+PATCH /api/produtos/1
+{ "preco": 17.5 }
+```
+
+→ só o preço muda; nome, descrição, estoque e categoria continuam como estavam. A resposta traz o produto completo.
+
+Para **apagar** um campo opcional (descrição, categoria, e-mail, telefone), envie-o com valor `null`:
+
+```json
+PATCH /api/produtos/1
+{ "categoria_id": null }
+```
+
+Um `PATCH` com corpo vazio (`{}`) ou só com campos desconhecidos devolve 400: é preciso enviar pelo menos um campo válido.
+
+### Exemplo de uso
+
+```bash
+# Criar produto
+curl -X POST http://localhost:3000/api/produtos \
+  -H "Content-Type: application/json" \
+  -d '{"nome":"Caderno 96 folhas","preco":15.9,"quantidade_estoque":40}'
+# → 201 {"id":1,"nome":"Caderno 96 folhas","preco":15.9,"quantidade_estoque":40}
+
+# Listar
+curl http://localhost:3000/api/produtos
+```
+
+Exemplos de todas as rotas, com corpo e respostas: [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ---
 
-## 12. Comparando as 4 tabelas implementadas
+## 6. Autenticação
 
-Cada tabela tem uma particularidade — o objetivo de implementar as 4 é ver o mesmo padrão se ajustando a situações diferentes:
+Só os `DELETE` de **produtos** e **categorias** exigem token. As demais rotas são abertas.
 
-| Tabela | Chaves estrangeiras | JOIN na leitura? | Verbo de atualização | Particularidade |
-|---|---|---|---|---|
-| `produtos` | 1 (`categoria_id`, opcional) | LEFT JOIN com `categorias` | PATCH (parcial) | categoria_id aceita NULL — por isso LEFT, não INNER |
-| `clientes` | nenhuma | — | PUT (completo) | O CRUD mais simples do projeto |
-| `pedidos` | 1 (`cliente_id`) | INNER JOIN com `clientes` | PUT, só do `status` | `deletar` pode ser bloqueado por FK |
-| `itens_pedido` | 2 (`pedido_id`, `produto_id`) | INNER JOIN duplo (`produtos` + `pedidos`) | PUT, só de `quantidade`/`preco_unitario` | Tabela associativa — resolve o N:N entre pedidos e produtos |
+```
+1. POST /api/usuarios/registro   { "nome", "email", "senha" }   → 201  (uma vez)
+2. POST /api/usuarios/login      { "email", "senha" }           → 200  { "token": "eyJ..." }
+3. DELETE /api/produtos/1
+   Header:  Authorization: Bearer eyJ...                        → 204
+```
 
-> **INNER JOIN x LEFT JOIN:** a regra prática é simples — se a FK pode ser `NULL` (como `produtos.categoria_id`), use `LEFT JOIN`, senão um registro "órfão" desaparece silenciosamente da lista. Se a FK é sempre obrigatória na prática (como `pedidos.cliente_id`, ou as duas FKs de `itens_pedido`, sempre exigidas pela validação), `INNER JOIN` é seguro e mais direto.
+- A senha é guardada como **hash bcrypt** — nem o administrador do banco vê a senha original.
+- O token JWT vale **1 hora**; depois disso, faça login de novo.
+- No Postman, o token é gravado automaticamente no ambiente pelo script do request **Login**.
 
-Se for criar uma tabela nova a partir daqui, o roteiro de sempre continua valendo:
+| Situação | Resposta |
+|---|---|
+| Sem o header `Authorization` | 401 `{ "erro": "sem token" }` |
+| Token falso, adulterado ou expirado | 401 `{ "erro": "token invalido" }` |
+| E-mail inexistente **ou** senha errada | 401 `{ "erro": "invalido" }` (a mesma resposta para os dois, de propósito) |
+| E-mail já cadastrado no registro | 400 `{ "erro": "email em uso" }` |
 
-1. `services/<entidade>Service.js` — as 5 funções (`criar`, `listarTodos`, `buscarPorId`, `atualizar`, `deletar`)
-2. `middlewares/validar<Entidade>.js` — validação de criação e, se fizer sentido, de atualização
-3. `controllers/<entidade>Controller.js` — sempre com `next(erro)` no catch, nunca `res.status(500)` direto
-4. `routes/<entidade>Routes.js` — aplique o middleware de validação certo em cada rota
-5. Registre a rota nova em `index.js`, **antes** dos dois `app.use` finais (404 e erro central)
+---
 
-O 404 e o tratamento de erro central não precisam de nada novo — eles já cobrem qualquer rota adicionada, desde que continuem sendo os dois últimos `app.use` do arquivo.
+## 7. Erros e status codes
+
+| Código | Quando | Exemplo de corpo |
+|---|---|---|
+| **200** OK | Consulta ou atualização feita | o recurso |
+| **201** Created | Registro criado | o recurso com o `id` |
+| **204** No Content | Remoção feita | *(sem corpo)* |
+| **400** Bad Request | Dados inválidos; referência inexistente; remoção bloqueada por vínculo; JSON malformado | `{ "erro": "Dados inválidos", "detalhes": [...] }` ou `{ "erro": "..." }` |
+| **401** Unauthorized | Token ausente/inválido; login errado | `{ "erro": "..." }` |
+| **404** Not Found | Id inexistente ou rota inexistente | `{ "erro": "Produto não encontrado" }` |
+| **500** Internal Server Error | Erro inesperado no servidor | `{ "erro": "Erro interno do servidor" }` |
+
+**Erros do MySQL traduzidos pelo `errorHandler` (`index.js`):**
+
+| Código do MySQL | Situação | Resposta da API |
+|---|---|---|
+| `ER_NO_REFERENCED_ROW_2` | Gravar uma FK que não existe (ex.: `categoria_id: 999`) | 400 `referência inválida — o registro relacionado não existe` |
+| `ER_ROW_IS_REFERENCED_2` | Apagar um registro que outra tabela ainda usa (ex.: categoria com produtos) | 400 `não é possível remover — existem registros vinculados a este` |
+| `ER_DUP_ENTRY` | E-mail repetido no registro | 400 `email em uso` (tratado no controller de usuários) |
+
+**Formato único de erro.** Toda resposta de erro traz o texto principal em **`erro`** (sempre uma string). Quando há uma lista de problemas — só na validação do corpo da requisição — o objeto também traz **`detalhes`**:
+
+```json
+// erro simples
+{ "erro": "Produto não encontrado" }
+
+// erro de validação (400): todos os problemas de uma vez
+{
+  "erro": "Dados inválidos",
+  "detalhes": [
+    "nome é obrigatório",
+    "preco deve ser um número maior que zero e até 99999999.99"
+  ]
+}
+```
+
+O formato da validação fica em `utils/respostasErro.js`; os demais erros são montados nos controllers, nos middlewares e no `errorHandler` do `index.js`.
+
+### O que é validado
+
+Os middlewares `validar*.js` barram a requisição **antes** do controller. Além de "obrigatório" e "tipo certo", conferem os limites das colunas do banco — sem isso, o MySQL recusaria o valor e o resultado seria um erro 500.
+
+| Regra | Exemplos |
+|---|---|
+| Campo obrigatório | `nome` e `preco` em produtos; `cliente_id` em pedidos |
+| Tipo | `preco` é número; `nome` é texto não vazio; ids e quantidades são inteiros |
+| Faixa | `preco` e `preco_unitario` > 0; `quantidade` > 0; `quantidade_estoque` ≥ 0 |
+| Tamanho | `nome` de categoria até 60 caracteres; de produto e cliente até 100; `telefone` até 20; `status` até 20 |
+| Formato | `email` de cliente e de usuário precisam parecer um e-mail (`nome@dominio.com`) |
+| Senha | de 6 a 72 caracteres |
+| Existência da referência | **não** é conferida no middleware: quem barra é o banco (chave estrangeira), e o `errorHandler` traduz para 400 |
+
+**Por que o `atualizar` busca o registro antes de dar `UPDATE`?** Se o `PATCH` (ou `PUT`) enviar exatamente os mesmos valores que já estão salvos, o MySQL devolve `affectedRows = 0` — e checar isso depois do `UPDATE` causaria um falso 404. Buscar antes evita o problema. (No `DELETE` não há esse risco: ou apagou 1 linha, ou 0.)
+
+---
+
+## 8. Documentação e Postman
+
+### `docs/openapi.yaml`
+
+Descreve todas as rotas, o que cada uma recebe e o que devolve (OpenAPI 3.0). Formas de visualizar:
+
+- **Postman:** *Import* → arraste o arquivo (gera uma Collection a partir da especificação)
+- **VS Code:** extensão *OpenAPI (Swagger) Editor*
+- **Navegador:** cole o conteúdo em <https://editor.swagger.io>
+
+Se você alterar uma rota da API, **atualize o `openapi.yaml`** — documentação desatualizada é pior que nenhuma.
+
+### `postman/`
+
+1. No Postman: *Import* → arraste os dois arquivos da pasta `postman/`.
+2. Selecione o ambiente **StockAPI Local** (canto superior direito).
+3. Rode **Auth ▸ Registrar usuário** (uma vez) e **Auth ▸ Login** — o token é gravado sozinho.
+4. Use as pastas **Produtos** e **Categorias**.
+
+> **Com o `seed.sql` carregado:** os requests **Deletar produto** e **Deletar categoria** (que usam o id `1`) devolvem **400**, porque esses registros têm vínculos — é o comportamento esperado, não um erro. Para ver o `204`, apague um registro sem vínculos (ex.: produto `5` ou categoria `3` do seed) ou um que você mesmo criou. O request **Registrar usuário** só funciona uma vez por e-mail (a segunda tentativa devolve 400 `email em uso`).
+
+O ambiente tem duas variáveis: `baseUrl` (`http://localhost:3000/api`) e `token`. **Antes de qualquer commit, confira se o `token` está vazio no JSON do ambiente.**
+
+---
+
+## 9. Problemas comuns
+
+| Sintoma | Causa provável | O que fazer |
+|---|---|---|
+| `Access denied for user` ao iniciar | `DB_USER`/`DB_PASSWORD` errados no `.env` | Corrija o `.env` e reinicie |
+| `Unknown database 'stockapi'` | `schema.sql` não foi executado | Rode o passo 3 |
+| `ECONNREFUSED` ao iniciar | MySQL não está rodando, ou `DB_HOST` errado | Inicie o MySQL |
+| `EADDRINUSE` | A porta já está em uso (outra instância da API) | Feche o outro processo ou mude `PORT` |
+| Login/DELETE falham e aparece o aviso `JWT_SECRET não definido` | `JWT_SECRET` ausente no `.env` | Preencha e reinicie |
+| 401 `sem token` no DELETE | Token não chegou | Faça o login; confira a autenticação **Bearer** no Postman |
+| 401 `token invalido` | Token expirado (1 h), cópia incompleta ou com aspas | Faça login de novo |
+| 400 `referência inválida…` | `categoria_id`/`cliente_id`/… que não existe | Confira o id na listagem |
+| 400 `não é possível remover…` | Existem registros usando este | Apague primeiro os dependentes (ex.: itens → pedido → cliente) |
+| `Cannot find module` | Faltou `npm install` | Rode `npm install` |
+| Alterei o código e nada mudou | Está usando `npm start` | Use `npm run dev` ou reinicie |
+| 404 `Rota GET /produtos não encontrada` | Faltou o prefixo `/api` | Use `/api/produtos` |

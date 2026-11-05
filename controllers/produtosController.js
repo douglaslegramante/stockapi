@@ -11,7 +11,7 @@
 
 import * as service from '../services/produtosService.js';
 
-// POST /produtos
+// POST /api/produtos
 // Quando essa função é chamada, o corpo da requisição JÁ passou pela
 // validação (middlewares/validarProduto.js, aplicado na rota) — não
 // precisamos checar de novo se nome/preco vieram certos.
@@ -26,7 +26,7 @@ export async function criar(req, res, next) {
   }
 }
 
-// GET /produtos
+// GET /api/produtos
 export async function listar(req, res, next) {
   try {
     const produtos = await service.listarTodos();
@@ -36,7 +36,7 @@ export async function listar(req, res, next) {
   }
 }
 
-// GET /produtos/:id
+// GET /api/produtos/:id
 export async function buscarPorId(req, res, next) {
   try {
     const { id } = req.params; // o :id da URL vem aqui
@@ -53,12 +53,11 @@ export async function buscarPorId(req, res, next) {
   }
 }
 
-// PATCH /produtos/:id
-// Atualização PARCIAL: o corpo da requisição pode trazer só um campo
-// (ex: { "preco": 20 }) ou vários — o que não vier permanece como está
-// no banco. É por isso que devolvemos o produto buscando ele de novo no
-// final, em vez de simplesmente ecoar `req.body`: o body só tem o que
-// mudou, não o estado completo do produto.
+// PATCH /api/produtos/:id
+// Atualização PARCIAL: o corpo pode trazer só um campo (ex: { "preco": 20 })
+// ou vários — o que não vier permanece como está no banco. É por isso que
+// devolvemos o produto buscando ele de novo no final, em vez de ecoar
+// `req.body`: o corpo só tem o que mudou, não o estado completo do produto.
 export async function atualizar(req, res, next) {
   try {
     const { id } = req.params;
@@ -77,9 +76,9 @@ export async function atualizar(req, res, next) {
 
     await service.atualizar(id, req.body);
 
-    // Buscamos de novo depois de atualizar, pra devolver o produto como
-    // ele está agora no banco — com os campos alterados E os que
-    // continuaram os mesmos.
+    // Buscamos de novo para devolver o produto como ele está AGORA no
+    // banco: campos alterados + campos que continuaram os mesmos (e o nome
+    // da categoria, vindo do JOIN).
     const produtoAtualizado = await service.buscarPorId(id);
     res.json(produtoAtualizado);
   } catch (erro) {
@@ -87,7 +86,7 @@ export async function atualizar(req, res, next) {
   }
 }
 
-// DELETE /produtos/:id
+// DELETE /api/produtos/:id   (rota protegida: exige token — ver produtosRoutes.js)
 export async function deletar(req, res, next) {
   try {
     const { id } = req.params;
@@ -103,6 +102,8 @@ export async function deletar(req, res, next) {
     // corpo da resposta (o produto não existe mais).
     res.status(204).send();
   } catch (erro) {
+    // Produto que já aparece em algum itens_pedido não pode ser apagado:
+    // o erro do MySQL cai aqui e o errorHandler (index.js) responde 400.
     next(erro);
   }
 }

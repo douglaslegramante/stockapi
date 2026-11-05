@@ -1,68 +1,67 @@
 // middlewares/validarItemPedido.js
-// Um middleware roda ANTES do controller — explicação completa em
-// middlewares/validarProduto.js. Este arquivo tem DOIS middlewares:
-// validarItemPedido (para criar — POST) exige as 2 chaves estrangeiras
-// (pedido_id, produto_id) mais quantidade e preço. validarAtualizacaoItemPedido
-// (para atualizar — PUT) só exige quantidade e preço — pedido_id e
-// produto_id não fazem parte de uma atualização (ver
-// services/itensPedidoService.js: um item não troca de pedido ou produto).
+//   • validarItemPedido            → POST:  as 2 FKs + quantidade + preço, tudo obrigatório
+//   • validarAtualizacaoItemPedido → PATCH: só quantidade e/ou preco_unitario, pelo menos um
+//
+// pedido_id e produto_id NÃO podem ser alterados depois de criados (para
+// trocar o produto de um item, apague o item e crie outro).
 
-// Usado na criação (POST /itens_pedido).
+import { responderValidacao } from '../utils/respostasErro.js';
+
+const PRECO_MAX = 99999999.99; // itens_pedido.preco_unitario DECIMAL(10,2)
+
+const CAMPOS_ATUALIZAVEIS_ITEM = ['quantidade', 'preco_unitario'];
+
+function erroId(valor, nomeCampo) {
+  if (!Number.isInteger(valor)) return `${nomeCampo} deve ser um número inteiro`;
+  return null;
+}
+
+function erroQuantidade(q) {
+  if (!Number.isInteger(q) || q <= 0) return 'quantidade deve ser um número inteiro maior que zero';
+  return null;
+}
+
+function erroPreco(p) {
+  if (typeof p !== 'number' || !(p > 0) || p > PRECO_MAX) {
+    return `preco_unitario deve ser um número maior que zero e até ${PRECO_MAX}`;
+  }
+  return null;
+}
+
+// POST /itens_pedido
 export function validarItemPedido(req, res, next) {
   const { pedido_id, produto_id, quantidade, preco_unitario } = req.body;
-  const erros = []; // vamos juntando aqui os problemas encontrados
+  const erros = [];
 
-  // pedido_id precisa existir e ser um número — é a FK que liga esse item
-  // a um pedido.
-  if (!pedido_id || typeof pedido_id !== 'number') {
-    erros.push('pedido_id é obrigatório e deve ser um número');
-  }
+  if (pedido_id === undefined) erros.push('pedido_id é obrigatório');
+  else if (erroId(pedido_id, 'pedido_id')) erros.push(erroId(pedido_id, 'pedido_id'));
 
-  // produto_id precisa existir e ser um número — é a FK que liga esse item
-  // a um produto.
-  if (!produto_id || typeof produto_id !== 'number') {
-    erros.push('produto_id é obrigatório e deve ser um número');
-  }
+  if (produto_id === undefined) erros.push('produto_id é obrigatório');
+  else if (erroId(produto_id, 'produto_id')) erros.push(erroId(produto_id, 'produto_id'));
 
-  // quantidade precisa ser um número maior que zero (não faz sentido pedir
-  // 0 ou -3 unidades de um produto).
-  if (!quantidade || typeof quantidade !== 'number' || quantidade <= 0) {
-    erros.push('quantidade é obrigatória e deve ser um número maior que zero');
-  }
+  if (quantidade === undefined) erros.push('quantidade é obrigatória');
+  else if (erroQuantidade(quantidade)) erros.push(erroQuantidade(quantidade));
 
-  // preco_unitario precisa ser um número maior que zero, pelo mesmo motivo.
-  if (!preco_unitario || typeof preco_unitario !== 'number' || preco_unitario <= 0) {
-    erros.push('preco_unitario é obrigatório e deve ser um número maior que zero');
-  }
+  if (preco_unitario === undefined) erros.push('preco_unitario é obrigatório');
+  else if (erroPreco(preco_unitario)) erros.push(erroPreco(preco_unitario));
 
-  // Se juntamos pelo menos um erro, a requisição para aqui com 400 Bad
-  // Request e a lista de tudo que está errado.
-  if (erros.length > 0) {
-    return res.status(400).json({ erros });
-  }
-
-  // Passou em todas as checagens: segue para o controller.
+  if (erros.length > 0) return responderValidacao(res, erros);
   next();
 }
 
-// Usado na atualização (PUT /itens_pedido/:id): não pede pedido_id nem
-// produto_id porque, uma vez criado, um item não troca de pedido ou de
-// produto — só quantidade e preço podem mudar.
+// PATCH /itens_pedido/:id
 export function validarAtualizacaoItemPedido(req, res, next) {
   const { quantidade, preco_unitario } = req.body;
   const erros = [];
 
-  if (!quantidade || typeof quantidade !== 'number' || quantidade <= 0) {
-    erros.push('quantidade é obrigatória e deve ser um número maior que zero');
+  const enviados = Object.keys(req.body).filter((campo) => CAMPOS_ATUALIZAVEIS_ITEM.includes(campo));
+  if (enviados.length === 0) {
+    erros.push(`envie pelo menos um campo para atualizar (${CAMPOS_ATUALIZAVEIS_ITEM.join(', ')})`);
   }
 
-  if (!preco_unitario || typeof preco_unitario !== 'number' || preco_unitario <= 0) {
-    erros.push('preco_unitario é obrigatório e deve ser um número maior que zero');
-  }
+  if (quantidade !== undefined && erroQuantidade(quantidade)) erros.push(erroQuantidade(quantidade));
+  if (preco_unitario !== undefined && erroPreco(preco_unitario)) erros.push(erroPreco(preco_unitario));
 
-  if (erros.length > 0) {
-    return res.status(400).json({ erros });
-  }
-
+  if (erros.length > 0) return responderValidacao(res, erros);
   next();
 }

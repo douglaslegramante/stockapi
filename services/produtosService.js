@@ -1,39 +1,39 @@
 // services/produtosService.js
-// Camada de acesso a dados: é a ÚNICA parte do projeto que sabe escrever SQL.
-// Cada função aqui faz uma coisa só (uma query) e devolve o resultado "cru" —
-// quem decide o que fazer com esse resultado (status code, formato da
-// resposta) é o controller, não o service.
+// O service é a camada que conversa com o banco. Aqui só existe SQL e
+// acesso ao pool: nada de req, res ou status code — isso é assunto do
+// controller. Por isso as funções recebem dados simples (um objeto, um id)
+// e devolvem dados simples (um id, uma lista, um número).
 
 import pool from '../config/db.js';
+import { montarAtualizacao } from '../utils/montarAtualizacao.js';
 
-// Lista de colunas que essa tabela aceita alterar. Usada tanto aqui quanto
-// no middleware de validação — é a mesma "lista de permissões" nos dois
-// lugares, então mantenha as duas em sincronia se a tabela mudar.
-const CAMPOS_PRODUTO = ['nome', 'descricao', 'preco', 'quantidade_estoque', 'categoria_id'];
+// Colunas que o PATCH pode alterar (whitelist). id nunca entra aqui.
+const CAMPOS_ATUALIZAVEIS = ['nome', 'descricao', 'preco', 'quantidade_estoque', 'categoria_id'];
 
-// Cria um produto novo e devolve o id que o MySQL gerou pra ele.
+// Os pontos de interrogação (?) são "parâmetros": o mysql2 troca cada ?
+// pelo valor correspondente do array, já com a proteção necessária.
+// NUNCA concatene valores direto na string do SQL (`... WHERE id = ${id}`):
+// isso abre a porta para SQL Injection.
+
+// INSERT — devolve o id gerado pelo AUTO_INCREMENT.
 export async function criar(produto) {
   const { nome, descricao, preco, quantidade_estoque, categoria_id } = produto;
 
-  // Os "?" são placeholders: o mysql2 substitui cada um pelo valor
-  // correspondente do array, escapando o conteúdo automaticamente.
-  // NUNCA monte a query concatenando strings (`'...' + nome + '...'`) —
-  // isso abre brecha pra SQL Injection.
+  // O operador ?? ("se for undefined ou null, use o valor da direita") cuida
+  // dos campos opcionais: sem descrição vira NULL no banco, sem estoque vira 0.
   const [resultado] = await pool.query(
     `INSERT INTO produtos (nome, descricao, preco, quantidade_estoque, categoria_id)
      VALUES (?, ?, ?, ?, ?)`,
     [nome, descricao ?? null, preco, quantidade_estoque ?? 0, categoria_id ?? null]
   );
 
-  // resultado.insertId é o id gerado automaticamente pelo AUTO_INCREMENT
   return resultado.insertId;
 }
 
-// Retorna todos os produtos cadastrados, com o nome da categoria (via
-// LEFT JOIN, não INNER JOIN). Por quê LEFT: categoria_id é opcional no
-// schema (aceita NULL) — um INNER JOIN faria produtos sem categoria
-// desaparecerem silenciosamente do resultado. Com LEFT JOIN, eles
-// continuam aparecendo, só que com categoria: null.
+// SELECT com LEFT JOIN: traz o NOME da categoria junto, em vez de só o id.
+// Por que LEFT e não INNER? Porque categoria_id pode ser NULL (produto sem
+// categoria). Com INNER JOIN esses produtos sumiriam da listagem; com
+// LEFT JOIN eles aparecem, com categoria = null.
 export async function listarTodos() {
   const [linhas] = await pool.query(
     `SELECT produtos.id, produtos.nome, produtos.descricao, produtos.preco,
@@ -45,8 +45,9 @@ export async function listarTodos() {
   return linhas;
 }
 
-// Busca um produto específico pelo id. Se não existir, devolve undefined
-// (é o controller que decide transformar isso em um 404).
+// Mesmo SELECT, filtrado por id. O resultado é sempre um array de linhas;
+// como o id é único, pegamos a primeira (linhas[0]). Se não achou nada,
+// linhas[0] é undefined — e o controller transforma isso em 404.
 export async function buscarPorId(id) {
   const [linhas] = await pool.query(
     `SELECT produtos.id, produtos.nome, produtos.descricao, produtos.preco,
@@ -60,30 +61,13 @@ export async function buscarPorId(id) {
   return linhas[0];
 }
 
-// Atualiza SÓ os campos que vierem em `camposParaAtualizar` — é uma
-// atualização PARCIAL (PATCH), não uma substituição completa (PUT).
-// Por isso o UPDATE precisa ser montado dinamicamente: não dá pra escrever
-// um "SET nome=?, preco=?, ..." fixo, porque nem sempre todos os campos
-// vêm preenchidos.
-export async function atualizar(id, camposAtualizados) {
-  // 1) Filtra: só entram campos que (a) realmente vieram no body e
-  //    (b) são colunas de verdade da tabela produtos. Isso é o que torna
-  //    seguro usar o nome do campo dentro da string da query mais abaixo —
-  //    nunca inserimos um nome de coluna que não esteja nessa lista fixa,
-  //    então não existe brecha para o cliente injetar SQL pelo nome do campo.
-  const camposParaAtualizar = Object.keys(camposAtualizados)
-    .filter((campo) => CAMPOS_PRODUTO.includes(campo));
-
-  // 2) Monta "nome = ?, preco = ?" dinamicamente, um pedaço pra cada campo
-  //    que sobrou depois do filtro.
-  const setClause = camposParaAtualizar
-    .map((campo) => `${campo} = ?`)
-    .join(', ');
-
-  // 3) Os VALORES continuam indo por parâmetro (?), nunca concatenados —
-  //    só o NOME da coluna (já filtrado pela whitelist) entra direto na
-  //    string. Essa é a diferença entre "dinâmico e seguro" e "vulnerável".
-  const valores = camposParaAtualizar.map((campo) => camposAtualizados[campo]);
+// UPDATE parcial (usado pelo PATCH): só os campos que vieram no corpo são
+// alterados; o resto fica como está no banco. Por isso o SQL é MONTADO
+// conforme o corpo — veja utils/montarAtualizacao.js para a explicação.
+//
+// ATENÇÃO ao WHERE: sem ele, o UPDATE alteraria TODOS os produtos da tabela.
+export async function atualizar(id, campos) {
+  const { setClause, valores } = montarAtualizacao(campos, CAMPOS_ATUALIZAVEIS);
 
   const [resultado] = await pool.query(
     `UPDATE produtos SET ${setClause} WHERE id = ?`,
@@ -93,8 +77,9 @@ export async function atualizar(id, camposAtualizados) {
   return resultado.affectedRows;
 }
 
-// Remove um produto. Aqui affectedRows É confiável para saber se existia:
-// um DELETE ou apaga exatamente 1 linha, ou apaga 0 — nunca fica "no meio".
+// DELETE — devolve quantas linhas foram removidas (0 ou 1).
+// Se o produto estiver em algum itens_pedido, o MySQL recusa
+// (ER_ROW_IS_REFERENCED_2) e o errorHandler do index.js responde.
 export async function deletar(id) {
   const [resultado] = await pool.query('DELETE FROM produtos WHERE id = ?', [id]);
   return resultado.affectedRows;

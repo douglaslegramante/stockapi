@@ -1,0 +1,1245 @@
+# docs/openapi.yaml
+# Especificação OpenAPI 3.0 da StockAPI — o "contrato" da API.
+#
+# Como ler este arquivo (de cima para baixo):
+#   info        → nome, versão e descrição geral da API
+#   servers     → onde a API está rodando
+#   tags        → grupos de rotas (viram seções na documentação)
+#   paths       → UMA entrada por rota; dentro dela, um bloco por método HTTP
+#   components  → peças reutilizáveis (schemas, respostas, parâmetros),
+#                 chamadas com $ref: '#/components/...'
+#
+# Como visualizar de forma bonita:
+#   • Postman: Import → arraste este arquivo (cria uma Collection a partir dele)
+#   • VS Code: extensão "OpenAPI (Swagger) Editor" ou "Swagger Viewer"
+#   • Navegador: cole o conteúdo em https://editor.swagger.io
+
+openapi: 3.0.3
+
+info:
+  title: StockAPI
+  version: 1.0.0
+  description: |
+    API REST de controle de estoque e pedidos, feita em Node.js + Express + MySQL
+    para a disciplina de Desenvolvimento Back-end II (IFRO).
+
+    **Autenticação:** a maioria das rotas é pública. Apenas as rotas marcadas
+    com um cadeado (🔒) exigem o header `Authorization: Bearer <token>`.
+    O token é obtido em `POST /usuarios/login`.
+
+    **Formato dos erros (único para toda a API):** toda resposta de erro traz
+    `{ "erro": "mensagem" }`. Quando há uma lista de problemas (validação do
+    corpo da requisição), o objeto também traz `"detalhes": ["...", "..."]`.
+
+    **Atualizações:** `PATCH` (parcial — envie só os campos que quer mudar) em
+    produtos, clientes e itens de pedido; `PUT` em categorias e pedidos, que
+    só têm um campo editável.
+
+    **Atenção ao preço:** o MySQL devolve colunas `DECIMAL` como texto
+    (`"15.90"`) nas consultas, mas ao criar um registro a API devolve
+    de volta o número que você enviou (`15.9`).
+
+servers:
+  - url: http://localhost:3000/api
+    description: Servidor local (desenvolvimento)
+
+tags:
+  - name: Auth
+    description: Cadastro de usuário e login (rotas públicas)
+  - name: Produtos
+    description: CRUD de produtos. O DELETE exige token.
+  - name: Categorias
+    description: CRUD de categorias. O DELETE exige token.
+  - name: Clientes
+    description: CRUD de clientes
+  - name: Pedidos
+    description: CRUD de pedidos (a listagem traz o nome do cliente)
+  - name: Itens do pedido
+    description: CRUD dos itens de cada pedido (a listagem traz o nome do produto)
+
+paths:
+  # ===================================================================
+  # AUTH
+  # ===================================================================
+  /usuarios/registro:
+    post:
+      tags: [Auth]
+      summary: Registrar usuário
+      description: >
+        Cria um usuário. A senha é guardada como hash (bcrypt), nunca em
+        texto puro. Devolve 400 se o e-mail já estiver cadastrado.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistroEntrada'
+            example:
+              nome: Professor
+              email: prof@ifro.edu.br
+              senha: '123456'
+      responses:
+        '201':
+          description: Usuário criado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsuarioCriado'
+              example:
+                id: 1
+                email: prof@ifro.edu.br
+        '400':
+          description: Dados inválidos ou e-mail já em uso.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Erro'
+              examples:
+                validacao:
+                  summary: Campos inválidos
+                  value:
+                    erro: Dados inválidos
+                    detalhes:
+                      - 'senha é obrigatória e deve ter entre 6 e 72 caracteres'
+                emailEmUso:
+                  summary: E-mail já cadastrado
+                  value:
+                    erro: email em uso
+
+  /usuarios/login:
+    post:
+      tags: [Auth]
+      summary: Login
+      description: >
+        Confere e-mail e senha e devolve um token JWT válido por 1 hora.
+        Envie o token nas rotas protegidas: `Authorization: Bearer <token>`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginEntrada'
+            example:
+              email: prof@ifro.edu.br
+              senha: '123456'
+      responses:
+        '200':
+          description: Login realizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Token'
+              example:
+                token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        '400':
+          description: E-mail ou senha ausentes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Erro'
+              example:
+                erro: Dados inválidos
+                detalhes:
+                  - 'senha é obrigatória e deve ser um texto'
+        '401':
+          description: E-mail não cadastrado ou senha errada (a mesma resposta para os dois casos).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Erro'
+              example:
+                erro: invalido
+
+  # ===================================================================
+  # PRODUTOS
+  # ===================================================================
+  /produtos:
+    get:
+      tags: [Produtos]
+      summary: Listar produtos
+      description: >
+        Lista todos os produtos, com o **nome** da categoria (LEFT JOIN).
+        Produto sem categoria aparece com `categoria: null`.
+      responses:
+        '200':
+          description: Lista de produtos (pode ser vazia).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Produto'
+              example:
+                - id: 1
+                  nome: Caderno 96 folhas
+                  descricao: Capa dura
+                  preco: '15.90'
+                  quantidade_estoque: 40
+                  categoria: Papelaria
+                - id: 5
+                  nome: Produto sem categoria
+                  descricao: null
+                  preco: '9.99'
+                  quantidade_estoque: 5
+                  categoria: null
+    post:
+      tags: [Produtos]
+      summary: Criar produto
+      description: Cria um produto. Exige `nome` (texto) e `preco` (número maior que zero).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProdutoEntrada'
+            example:
+              nome: Caderno 96 folhas
+              descricao: Capa dura
+              preco: 15.9
+              quantidade_estoque: 40
+              categoria_id: 1
+      responses:
+        '201':
+          description: Produto criado. Devolve os dados enviados mais o `id` gerado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProdutoCriado'
+              example:
+                id: 1
+                nome: Caderno 96 folhas
+                descricao: Capa dura
+                preco: 15.9
+                quantidade_estoque: 40
+                categoria_id: 1
+        '400':
+          $ref: '#/components/responses/RequisicaoInvalida'
+
+  /produtos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Produtos]
+      summary: Buscar produto por id
+      responses:
+        '200':
+          description: Produto encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Produto'
+              example:
+                id: 1
+                nome: Caderno 96 folhas
+                descricao: Capa dura
+                preco: '15.90'
+                quantidade_estoque: 40
+                categoria: Papelaria
+        '404':
+          $ref: '#/components/responses/ProdutoNaoEncontrado'
+    patch:
+      tags: [Produtos]
+      summary: Atualizar produto (parcial)
+      description: >
+        **Atualização parcial** (PATCH): envie apenas os campos que deseja
+        alterar — os demais permanecem como estão. Pelo menos um campo é
+        obrigatório. Para remover a categoria ou a descrição, envie o campo
+        com valor `null`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProdutoAtualizacao'
+            examples:
+              soPreco:
+                summary: Só o preço
+                value:
+                  preco: 17.5
+              varios:
+                summary: Vários campos
+                value:
+                  preco: 17.5
+                  quantidade_estoque: 30
+              semCategoria:
+                summary: Remover a categoria
+                value:
+                  categoria_id: null
+      responses:
+        '200':
+          description: Produto atualizado, completo, como está agora no banco.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Produto'
+              example:
+                id: 1
+                nome: Caderno 96 folhas
+                descricao: Capa dura
+                preco: '17.50'
+                quantidade_estoque: 40
+                categoria: Papelaria
+        '400':
+          $ref: '#/components/responses/RequisicaoInvalida'
+        '404':
+          $ref: '#/components/responses/ProdutoNaoEncontrado'
+    delete:
+      tags: [Produtos]
+      summary: Deletar produto 🔒
+      description: >
+        **Exige token.** Produto que já aparece em algum item de pedido não
+        pode ser apagado (400).
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Produto removido (sem corpo na resposta).
+        '400':
+          $ref: '#/components/responses/RegistroVinculado'
+        '401':
+          $ref: '#/components/responses/NaoAutenticado'
+        '404':
+          $ref: '#/components/responses/ProdutoNaoEncontrado'
+
+  # ===================================================================
+  # CATEGORIAS
+  # ===================================================================
+  /categorias:
+    get:
+      tags: [Categorias]
+      summary: Listar categorias
+      responses:
+        '200':
+          description: Lista de categorias (pode ser vazia).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Categoria'
+              example:
+                - id: 1
+                  nome: Papelaria
+                - id: 2
+                  nome: Informática
+    post:
+      tags: [Categorias]
+      summary: Criar categoria
+      description: Cria uma categoria. Exige `nome` (texto não vazio).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoriaEntrada'
+            example:
+              nome: Papelaria
+      responses:
+        '201':
+          description: Categoria criada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Categoria'
+              example:
+                id: 1
+                nome: Papelaria
+        '400':
+          $ref: '#/components/responses/RequisicaoInvalida'
+
+  /categorias/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Categorias]
+      summary: Buscar categoria por id
+      responses:
+        '200':
+          description: Categoria encontrada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Categoria'
+              example:
+                id: 1
+                nome: Papelaria
+        '404':
+          $ref: '#/components/responses/CategoriaNaoEncontrada'
+    put:
+      tags: [Categorias]
+      summary: Atualizar categoria
+      description: Substitui o nome de uma categoria existente.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoriaEntrada'
+            example:
+              nome: Papelaria e Escritório
+      responses:
+        '200':
+          description: Categoria atualizada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Categoria'
+              example:
+                id: 1
+                nome: Papelaria e Escritório
+        '400':
+          $ref: '#/components/responses/RequisicaoInvalida'
+        '404':
+          $ref: '#/components/responses/CategoriaNaoEncontrada'
+    delete:
+      tags: [Categorias]
+      summary: Deletar categoria 🔒
+      description: >
+        **Exige token.** Categoria que ainda tem produtos vinculados não
+        pode ser apagada (400).
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Categoria removida (sem corpo na resposta).
+        '400':
+          $ref: '#/components/responses/RegistroVinculado'
+        '401':
+          $ref: '#/components/responses/NaoAutenticado'
+        '404':
+          $ref: '#/components/responses/CategoriaNaoEncontrada'
+
+  # ===================================================================
+  # CLIENTES
+  # ===================================================================
+  /clientes:
+    get:
+      tags: [Clientes]
+      summary: Listar clientes
+      responses:
+        '200':
+          description: Lista de clientes (pode ser vazia).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Cliente'
+              example:
+                - id: 1
+                  nome: Maria Souza
+                  email: maria@exemplo.com
+                  telefone: 69 99999-0001
+                - id: 3
+                  nome: Ana Castro
+                  email: null
+                  telefone: null
+    post:
+      tags: [Clientes]
+      summary: Criar cliente
+      description: Exige `nome`. `email` e `telefone` são opcionais.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClienteEntrada'
+            example:
+              nome: Maria Souza
+              email: maria@exemplo.com
+              telefone: 69 99999-0001
+      responses:
+        '201':
+          description: Cliente criado. Devolve os dados enviados mais o `id` gerado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClienteCriado'
+              example:
+                id: 1
+                nome: Maria Souza
+                email: maria@exemplo.com
+                telefone: 69 99999-0001
+        '400':
+          $ref: '#/components/responses/RequisicaoInvalida'
+
+  /clientes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Clientes]
+      summary: Buscar cliente por id
+      responses:
+        '200':
+          description: Cliente encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cliente'
+              example:
+                id: 1
+                nome: Maria Souza
+                email: maria@exemplo.com
+                telefone: 69 99999-0001
+        '404':
+          $ref: '#/components/responses/ClienteNaoEncontrado'
+    patch:
+      tags: [Clientes]
+      summary: Atualizar cliente (parcial)
+      description: >
+        **Atualização parcial** (PATCH): envie apenas os campos que deseja
+        alterar. Pelo menos um campo é obrigatório. Para apagar o e-mail ou o
+        telefone, envie o campo com valor `null`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClienteAtualizacao'
+            examples:
+              soTelefone:
+                summary: Só o telefone
+                value:
+                  telefone: 69 98888-0002
+              apagarEmail:
+                summary: Apagar o e-mail
+                value:
+                  email: null
+      responses:
+        '200':
+          description: Cliente atualizado, completo, como está agora no banco.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cliente'
+              example:
+                id: 1
+                nome: Maria Souza
+                email: maria@exemplo.com
+                telefone: 69 98888-0002
+        '400':
+          $ref: '#/components/responses/RequisicaoInvalida'
+        '404':
+          $ref: '#/components/responses/ClienteNaoEncontrado'
+    delete:
+      tags: [Clientes]
+      summary: Deletar cliente
+      description: Cliente que já tem pedidos não pode ser apagado (400).
+      responses:
+        '204':
+          description: Cliente removido (sem corpo na resposta).
+        '400':
+          $ref: '#/components/responses/RegistroVinculado'
+        '404':
+          $ref: '#/components/responses/ClienteNaoEncontrado'
+
+  # ===================================================================
+  # PEDIDOS
+  # ===================================================================
+  /pedidos:
+    get:
+      tags: [Pedidos]
+      summary: Listar pedidos
+      description: Lista os pedidos com o **nome** do cliente (INNER JOIN).
+      responses:
+        '200':
+          description: Lista de pedidos (pode ser vazia).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Pedido'
+              example:
+                - id: 1
+                  data_pedido: '2026-03-10T14:30:00.000Z'
+                  status: pendente
+                  cliente: Maria Souza
+    post:
+      tags: [Pedidos]
+      summary: Criar pedido
+      description: >
+        Exige `cliente_id` (número de um cliente existente). Sem `status`,
+        o pedido nasce como `pendente`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PedidoEntrada'
+            example:
+              cliente_id: 1
+      responses:
+        '201':
+          description: Pedido criado. Devolve os dados enviados mais o `id` gerado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PedidoCriado'
+              example:
+                id: 1
+                cliente_id: 1
+        '400':
+          $ref: '#/components/responses/RequisicaoInvalida'
+
+  /pedidos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Pedidos]
+      summary: Buscar pedido por id
+      responses:
+        '200':
+          description: Pedido encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pedido'
+              example:
+                id: 1
+                data_pedido: '2026-03-10T14:30:00.000Z'
+                status: pendente
+                cliente: Maria Souza
+        '404':
+          $ref: '#/components/responses/PedidoNaoEncontrado'
+    put:
+      tags: [Pedidos]
+      summary: Atualizar status do pedido
+      description: >
+        Num pedido existente **só o `status` pode mudar** (trocar o cliente
+        ou a data não faz sentido).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PedidoStatusEntrada'
+            example:
+              status: pago
+      responses:
+        '200':
+          description: Status atualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PedidoStatus'
+              example:
+                id: 1
+                status: pago
+        '400':
+          $ref: '#/components/responses/RequisicaoInvalida'
+        '404':
+          $ref: '#/components/responses/PedidoNaoEncontrado'
+    delete:
+      tags: [Pedidos]
+      summary: Deletar pedido
+      description: Pedido que já tem itens não pode ser apagado (400).
+      responses:
+        '204':
+          description: Pedido removido (sem corpo na resposta).
+        '400':
+          $ref: '#/components/responses/RegistroVinculado'
+        '404':
+          $ref: '#/components/responses/PedidoNaoEncontrado'
+
+  # ===================================================================
+  # ITENS DO PEDIDO
+  # ===================================================================
+  /itens_pedido:
+    get:
+      tags: [Itens do pedido]
+      summary: Listar itens de pedido
+      description: >
+        Lista os itens com o **nome do produto** e o **status do pedido**
+        (dois INNER JOIN).
+      responses:
+        '200':
+          description: Lista de itens (pode ser vazia).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ItemPedido'
+              example:
+                - id: 1
+                  quantidade: 2
+                  preco_unitario: '15.90'
+                  produto: Caderno 96 folhas
+                  pedido_numero: 1
+                  pedido_status: pendente
+    post:
+      tags: [Itens do pedido]
+      summary: Criar item de pedido
+      description: >
+        Exige `pedido_id` e `produto_id` (de registros existentes),
+        `quantidade` e `preco_unitario` (números maiores que zero).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemPedidoEntrada'
+            example:
+              pedido_id: 1
+              produto_id: 1
+              quantidade: 2
+              preco_unitario: 15.9
+      responses:
+        '201':
+          description: Item criado. Devolve os dados enviados mais o `id` gerado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemPedidoCriado'
+              example:
+                id: 1
+                pedido_id: 1
+                produto_id: 1
+                quantidade: 2
+                preco_unitario: 15.9
+        '400':
+          $ref: '#/components/responses/RequisicaoInvalida'
+
+  /itens_pedido/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Itens do pedido]
+      summary: Buscar item de pedido por id
+      responses:
+        '200':
+          description: Item encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemPedido'
+              example:
+                id: 1
+                quantidade: 2
+                preco_unitario: '15.90'
+                produto: Caderno 96 folhas
+                pedido_numero: 1
+                pedido_status: pendente
+        '404':
+          $ref: '#/components/responses/ItemNaoEncontrado'
+    patch:
+      tags: [Itens do pedido]
+      summary: Atualizar item de pedido (parcial)
+      description: >
+        **Atualização parcial** (PATCH): `quantidade` e/ou `preco_unitario`.
+        Pelo menos um é obrigatório. Para trocar o produto ou o pedido,
+        apague o item e crie outro.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemPedidoAtualizacao'
+            examples:
+              soQuantidade:
+                summary: Só a quantidade
+                value:
+                  quantidade: 3
+              ambos:
+                summary: Quantidade e preço
+                value:
+                  quantidade: 3
+                  preco_unitario: 14.9
+      responses:
+        '200':
+          description: Item atualizado, completo, como está agora no banco.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemPedido'
+              example:
+                id: 1
+                quantidade: 3
+                preco_unitario: '15.90'
+                produto: Caderno 96 folhas
+                pedido_numero: 1
+                pedido_status: pendente
+        '400':
+          $ref: '#/components/responses/RequisicaoInvalida'
+        '404':
+          $ref: '#/components/responses/ItemNaoEncontrado'
+    delete:
+      tags: [Itens do pedido]
+      summary: Deletar item de pedido
+      responses:
+        '204':
+          description: Item removido (sem corpo na resposta).
+        '404':
+          $ref: '#/components/responses/ItemNaoEncontrado'
+
+# =====================================================================
+# COMPONENTES REUTILIZÁVEIS
+# =====================================================================
+components:
+  # --- Autenticação: o botão "Authorize" da documentação usa isto ---
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Cole o token devolvido por `POST /usuarios/login` (sem a palavra "Bearer").
+
+  # --- Parâmetro de caminho usado em todas as rotas /{id} ---
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      description: Identificador do registro (número inteiro).
+      schema:
+        type: integer
+        minimum: 1
+      example: 1
+
+  # --- Respostas de erro reutilizadas em várias rotas ---
+  responses:
+    RequisicaoInvalida:
+      description: >
+        Requisição inválida: campo ausente ou com tipo errado, JSON malformado,
+        ou referência a um registro que não existe (ex.: `categoria_id` inexistente).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Erro'
+          examples:
+            validacao:
+              summary: Campos inválidos
+              value:
+                erro: Dados inválidos
+                detalhes:
+                  - 'nome é obrigatório'
+                  - 'preco deve ser um número maior que zero e até 99999999.99'
+            referencia:
+              summary: Chave estrangeira inexistente
+              value:
+                erro: referência inválida — o registro relacionado não existe
+            jsonInvalido:
+              summary: JSON malformado
+              value:
+                erro: JSON inválido no corpo da requisição
+    RegistroVinculado:
+      description: >
+        Não é possível remover: ainda existem registros de outra tabela
+        apontando para este (chave estrangeira).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Erro'
+          example:
+            erro: não é possível remover — existem registros vinculados a este
+    NaoAutenticado:
+      description: Token ausente, inválido ou expirado.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Erro'
+          examples:
+            semToken:
+              summary: Header Authorization ausente
+              value:
+                erro: sem token
+            tokenInvalido:
+              summary: Token falso ou expirado
+              value:
+                erro: token invalido
+    ProdutoNaoEncontrado:
+      description: Não existe produto com esse id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Erro'
+          example:
+            erro: Produto não encontrado
+    CategoriaNaoEncontrada:
+      description: Não existe categoria com esse id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Erro'
+          example:
+            erro: Categoria não encontrada
+    ClienteNaoEncontrado:
+      description: Não existe cliente com esse id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Erro'
+          example:
+            erro: Cliente não encontrado
+    PedidoNaoEncontrado:
+      description: Não existe pedido com esse id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Erro'
+          example:
+            erro: Pedido não encontrado
+    ItemNaoEncontrado:
+      description: Não existe item de pedido com esse id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Erro'
+          example:
+            erro: Item de pedido não encontrado
+
+  # --- Schemas: o formato dos objetos que entram e saem da API ---
+  schemas:
+    # ----- Erro (formato único) -----
+    Erro:
+      type: object
+      required: [erro]
+      properties:
+        erro:
+          type: string
+          description: Mensagem principal do erro.
+        detalhes:
+          type: array
+          items:
+            type: string
+          description: Lista de problemas encontrados. Só existe em erros de validação (400).
+
+    # ----- Auth -----
+    RegistroEntrada:
+      type: object
+      required: [nome, email, senha]
+      properties:
+        nome:
+          type: string
+          minLength: 1
+          maxLength: 100
+        email:
+          type: string
+          format: email
+          maxLength: 120
+        senha:
+          type: string
+          minLength: 6
+          maxLength: 72
+    LoginEntrada:
+      type: object
+      required: [email, senha]
+      properties:
+        email:
+          type: string
+        senha:
+          type: string
+    UsuarioCriado:
+      type: object
+      required: [id, email]
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+    Token:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: Token JWT (válido por 1 hora).
+
+    # ----- Produtos -----
+    ProdutoEntrada:
+      type: object
+      required: [nome, preco]
+      properties:
+        nome:
+          type: string
+          minLength: 1
+          maxLength: 100
+        descricao:
+          type: string
+          nullable: true
+        preco:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          maximum: 99999999.99
+        quantidade_estoque:
+          type: integer
+          minimum: 0
+          default: 0
+        categoria_id:
+          type: integer
+          nullable: true
+          description: Id de uma categoria existente, ou null para produto sem categoria.
+    ProdutoAtualizacao:
+      description: Todos os campos são opcionais, mas pelo menos um deve ser enviado.
+      type: object
+      minProperties: 1
+      properties:
+        nome:
+          type: string
+          minLength: 1
+          maxLength: 100
+        descricao:
+          type: string
+          nullable: true
+        preco:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          maximum: 99999999.99
+        quantidade_estoque:
+          type: integer
+          minimum: 0
+        categoria_id:
+          type: integer
+          nullable: true
+          description: Id de uma categoria existente, ou null para remover a categoria.
+    ProdutoCriado:
+      description: Eco do que foi enviado, mais o id gerado.
+      type: object
+      required: [id, nome, preco]
+      properties:
+        id:
+          type: integer
+        nome:
+          type: string
+        descricao:
+          type: string
+          nullable: true
+        preco:
+          type: number
+        quantidade_estoque:
+          type: integer
+        categoria_id:
+          type: integer
+          nullable: true
+    Produto:
+      description: Produto como vem do banco (com o nome da categoria).
+      type: object
+      required: [id, nome, descricao, preco, quantidade_estoque, categoria]
+      properties:
+        id:
+          type: integer
+        nome:
+          type: string
+        descricao:
+          type: string
+          nullable: true
+        preco:
+          type: string
+          description: 'DECIMAL do MySQL, devolvido como texto (ex.: "15.90").'
+          pattern: '^\d+\.\d{2}$'
+        quantidade_estoque:
+          type: integer
+        categoria:
+          type: string
+          nullable: true
+          description: Nome da categoria (null se o produto não tem categoria).
+
+    # ----- Categorias -----
+    CategoriaEntrada:
+      type: object
+      required: [nome]
+      properties:
+        nome:
+          type: string
+          minLength: 1
+          maxLength: 60
+    Categoria:
+      type: object
+      required: [id, nome]
+      properties:
+        id:
+          type: integer
+        nome:
+          type: string
+
+    # ----- Clientes -----
+    ClienteEntrada:
+      type: object
+      required: [nome]
+      properties:
+        nome:
+          type: string
+          minLength: 1
+          maxLength: 100
+        email:
+          type: string
+          format: email
+          maxLength: 120
+          nullable: true
+        telefone:
+          type: string
+          minLength: 1
+          maxLength: 20
+          nullable: true
+    ClienteAtualizacao:
+      description: Todos os campos são opcionais, mas pelo menos um deve ser enviado. Envie null para apagar e-mail ou telefone.
+      type: object
+      minProperties: 1
+      properties:
+        nome:
+          type: string
+          minLength: 1
+          maxLength: 100
+        email:
+          type: string
+          format: email
+          maxLength: 120
+          nullable: true
+        telefone:
+          type: string
+          minLength: 1
+          maxLength: 20
+          nullable: true
+    ClienteCriado:
+      description: Eco do que foi enviado, mais o id.
+      type: object
+      required: [id, nome]
+      properties:
+        id:
+          type: integer
+        nome:
+          type: string
+        email:
+          type: string
+          nullable: true
+        telefone:
+          type: string
+          nullable: true
+    Cliente:
+      type: object
+      required: [id, nome, email, telefone]
+      properties:
+        id:
+          type: integer
+        nome:
+          type: string
+        email:
+          type: string
+          nullable: true
+        telefone:
+          type: string
+          nullable: true
+
+    # ----- Pedidos -----
+    PedidoEntrada:
+      type: object
+      required: [cliente_id]
+      properties:
+        cliente_id:
+          type: integer
+          description: Id de um cliente existente.
+        status:
+          type: string
+          minLength: 1
+          maxLength: 20
+          description: Opcional. Se omitido, o pedido nasce como "pendente".
+    PedidoCriado:
+      description: Eco do que foi enviado, mais o id gerado.
+      type: object
+      required: [id, cliente_id]
+      properties:
+        id:
+          type: integer
+        cliente_id:
+          type: integer
+        status:
+          type: string
+    PedidoStatusEntrada:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          minLength: 1
+          maxLength: 20
+          example: pago
+    PedidoStatus:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+    Pedido:
+      description: Pedido como vem do banco (com o nome do cliente).
+      type: object
+      required: [id, data_pedido, status, cliente]
+      properties:
+        id:
+          type: integer
+        data_pedido:
+          type: string
+          format: date-time
+        status:
+          type: string
+        cliente:
+          type: string
+          description: Nome do cliente.
+
+    # ----- Itens do pedido -----
+    ItemPedidoEntrada:
+      type: object
+      required: [pedido_id, produto_id, quantidade, preco_unitario]
+      properties:
+        pedido_id:
+          type: integer
+        produto_id:
+          type: integer
+        quantidade:
+          type: integer
+          minimum: 1
+        preco_unitario:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+    ItemPedidoCriado:
+      description: Eco do que foi enviado, mais o id gerado.
+      type: object
+      required: [id, pedido_id, produto_id, quantidade, preco_unitario]
+      properties:
+        id:
+          type: integer
+        pedido_id:
+          type: integer
+        produto_id:
+          type: integer
+        quantidade:
+          type: integer
+        preco_unitario:
+          type: number
+    ItemPedidoAtualizacao:
+      description: Todos os campos são opcionais, mas pelo menos um deve ser enviado.
+      type: object
+      minProperties: 1
+      properties:
+        quantidade:
+          type: integer
+          minimum: 1
+        preco_unitario:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          maximum: 99999999.99
+    ItemPedido:
+      description: Item como vem do banco (com o nome do produto e o status do pedido).
+      type: object
+      required: [id, quantidade, preco_unitario, produto, pedido_numero, pedido_status]
+      properties:
+        id:
+          type: integer
+        quantidade:
+          type: integer
+        preco_unitario:
+          type: string
+          description: 'DECIMAL do MySQL, devolvido como texto (ex.: "15.90").'
+        produto:
+          type: string
+          description: Nome do produto.
+        pedido_numero:
+          type: integer
+        pedido_status:
+          type: string

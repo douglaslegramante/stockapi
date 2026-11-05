@@ -1,37 +1,47 @@
 // middlewares/validarPedido.js
-// Um middleware roda ANTES do controller — explicação completa em
-// middlewares/validarProduto.js. Dois middlewares aqui porque criar e
-// atualizar pedem coisas diferentes: criar precisa de cliente_id (quem
-// está fazendo o pedido); atualizar só muda o status (ex: de "pendente"
-// para "enviado").
+// Dois middlewares porque criar e atualizar pedem coisas diferentes:
+//   • validarPedido            → POST: cliente_id obrigatório; status opcional
+//   • validarAtualizacaoPedido → PUT:  status obrigatório
+//
+// Pedido usa PUT (e não PATCH) porque o ÚNICO campo que pode mudar é o status:
+// também não existe "atualização parcial" aqui.
 
-// Usado na criação (POST /pedidos).
+import { responderValidacao } from '../utils/respostasErro.js';
+
+const STATUS_MAX = 20; // pedidos.status VARCHAR(20)
+
+function erroStatus(status) {
+  if (typeof status !== 'string' || !status.trim()) return 'status deve ser um texto não vazio';
+  if (status.length > STATUS_MAX) return `status deve ter no máximo ${STATUS_MAX} caracteres`;
+  return null;
+}
+
+// POST /pedidos
 export function validarPedido(req, res, next) {
-  const { cliente_id } = req.body;
+  const { cliente_id, status } = req.body;
+  const erros = [];
 
-  // cliente_id precisa existir e ser um número — é a FK que liga o pedido
-  // a um cliente já cadastrado.
-  if (!cliente_id || typeof cliente_id !== 'number') {
-    return res.status(400).json({
-      erro: 'cliente_id é obrigatório e deve ser um número',
-    });
+  if (cliente_id === undefined) {
+    erros.push('cliente_id é obrigatório');
+  } else if (!Number.isInteger(cliente_id)) {
+    erros.push('cliente_id deve ser um número inteiro');
   }
 
-  // Passou na checagem: segue para o controller.
+  // status é opcional na criação (o padrão "pendente" é definido no service).
+  if (status !== undefined && erroStatus(status)) erros.push(erroStatus(status));
+
+  if (erros.length > 0) return responderValidacao(res, erros);
   next();
 }
 
-// Usado na atualização (PUT /pedidos/:id): não pede cliente_id, porque um
-// pedido já criado não muda de cliente — só o status é atualizável.
+// PUT /pedidos/:id
 export function validarAtualizacaoPedido(req, res, next) {
   const { status } = req.body;
+  const erros = [];
 
-  // status precisa existir, ser string, e não pode ser só espaços em branco
-  if (!status || typeof status !== 'string' || !status.trim()) {
-    return res.status(400).json({
-      erro: 'status é obrigatório e deve ser um texto',
-    });
-  }
+  if (status === undefined) erros.push('status é obrigatório');
+  else if (erroStatus(status)) erros.push(erroStatus(status));
 
+  if (erros.length > 0) return responderValidacao(res, erros);
   next();
 }

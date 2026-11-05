@@ -1,35 +1,25 @@
 // routes/produtosRoutes.js
-// Define as URLs da API de produtos e liga cada uma ao seu controller —
-// e, quando necessário, ao middleware de validação antes dele.
-//
-// Cada linha abaixo é lida assim:
-//   router.<verbo>(<caminho>, [middlewares...], controller)
-// Os middlewares rodam na ordem em que aparecem, da esquerda pra direita,
-// e só passam a vez com next(). O controller é sempre o último da lista.
+// A rota só liga três coisas: MÉTODO + CAMINHO → (middlewares) → controller.
+// Os middlewares listados entre o caminho e o controller rodam na ordem em
+// que aparecem; se algum responder sem chamar next(), o controller não roda.
 
 import express from 'express';
 import * as controller from '../controllers/produtosController.js';
 import { validarProduto, validarAtualizacaoProduto } from '../middlewares/validarProduto.js';
+import { autenticar } from '../middlewares/autenticar.js';
 
 const router = express.Router();
 
-// Criar recebe todos os dados obrigatórios no corpo, então passa pela
-// validação "cheia" (nome e preco obrigatórios).
+// Os caminhos NÃO começam com /api: o prefixo é colocado no index.js,
+// em app.use('/api', produtosRoutes).
 router.post('/produtos', validarProduto, controller.criar);
-
 router.get('/produtos', controller.listar);
 router.get('/produtos/:id', controller.buscarPorId);
-
-// PATCH, não PUT: essa rota aceita atualização PARCIAL — o cliente manda
-// só os campos que quer mudar, não o produto inteiro. Por isso usa a
-// validação "parcial" (validarAtualizacaoProduto), que só checa o tipo
-// dos campos que realmente vierem.
+// PATCH = atualização parcial: envie só os campos que quer mudar.
 router.patch('/produtos/:id', validarAtualizacaoProduto, controller.atualizar);
 
-// Deletar não recebe corpo, então não precisa de validação.
-router.delete('/produtos/:id', controller.deletar);
+// Rota PROTEGIDA: `autenticar` roda primeiro e só deixa passar quem
+// enviou um token JWT válido no header Authorization.
+router.delete('/produtos/:id', autenticar, controller.deletar);
 
-// Esse router é importado e "plugado" no app principal, em index.js
-// (app.use('/api/v1/stockapi', produtosRoutes)) — é lá que o prefixo /api é somado
-// na frente de cada rota definida aqui.
 export default router;
